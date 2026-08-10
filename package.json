@@ -25,6 +25,9 @@
     "typescript": "^5"
   },
   "packageManager": "pnpm@11.16.0",
-"pnpm": {
-  "onlyBuiltDependencies": ["unrs-resolver"]
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "unrs-resolver"
+    ]
+  }
 }
