@@ -31,6 +31,7 @@ export default function Home() {
   const frameRef = useRef<() => void>(() => {});
   const previousRef = useRef<Record<string, { x: number; y: number }>>({});
   const [status, setStatus] = useState<Status>("ready");
+  const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   const [message, setMessage] = useState("กดเริ่มกล้องเพื่อวิเคราะห์แบบเรียลไทม์");
   const [helmet, setHelmet] = useState<"unknown" | "likely" | "not-found">("unknown");
   const [motions, setMotions] = useState<Motion[]>([
@@ -47,6 +48,19 @@ export default function Home() {
   }, []);
 
   useEffect(() => () => stop(), [stop]);
+
+  const openCamera = async (mode: "user" | "environment") => {
+    const video = videoRef.current;
+    if (!video) return;
+    const previousStream = video.srcObject as MediaStream | null;
+    previousStream?.getTracks().forEach((track) => track.stop());
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: mode }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await video.play();
+  };
 
   const inspectHelmetColor = (ctx: CanvasRenderingContext2D, face: { x: number; y: number }[]) => {
     if (!face.length) return setHelmet("unknown");
@@ -118,14 +132,30 @@ export default function Home() {
         HandLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: HAND_MODEL }, runningMode: "VIDEO", numHands: 4 }),
         FaceLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: FACE_MODEL }, runningMode: "VIDEO", numFaces: 2 }),
       ]);
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-      if (!videoRef.current) return;
-      videoRef.current.srcObject = stream;
-      await videoRef.current.play();
+      await openCamera(facingMode);
       setStatus("running"); setMessage("กำลังวิเคราะห์จากกล้อง — ภาพประมวลผลบนอุปกรณ์ของคุณ");
       rafRef.current = requestAnimationFrame(() => frameRef.current());
     } catch (error) {
       console.error(error); setStatus("error"); setMessage("ไม่สามารถเปิดกล้องหรือโหลดโมเดลได้ โปรดอนุญาตการใช้กล้องและลองใหม่");
+    }
+  };
+
+  const switchCamera = async () => {
+    if (status !== "running") return;
+    const nextMode = facingMode === "user" ? "environment" : "user";
+    try {
+      cancelAnimationFrame(rafRef.current);
+      setStatus("loading");
+      await openCamera(nextMode);
+      setFacingMode(nextMode);
+      setStatus("running");
+      setMessage(`กำลังวิเคราะห์จาก${nextMode === "user" ? "กล้องหน้า" : "กล้องหลัง"} — ภาพประมวลผลบนอุปกรณ์ของคุณ`);
+      rafRef.current = requestAnimationFrame(() => frameRef.current());
+    } catch (error) {
+      console.error(error);
+      setStatus("running");
+      setMessage("ไม่พบกล้องที่ต้องการ หรือเบราว์เซอร์ไม่อนุญาตให้สลับกล้อง");
+      rafRef.current = requestAnimationFrame(() => frameRef.current());
     }
   };
 
@@ -143,8 +173,8 @@ export default function Home() {
     </section>
     <section className="workspace">
       <div className="viewer">
-        <video ref={videoRef} muted playsInline className={status === "running" ? "hidden" : ""} />
-        <canvas ref={canvasRef} className={status === "running" ? "" : "hidden"} />
+        <video ref={videoRef} muted playsInline className={`${status === "running" ? "hidden" : ""} ${facingMode === "user" ? "mirror" : ""}`} />
+        <canvas ref={canvasRef} className={`${status === "running" ? "" : "hidden"} ${facingMode === "user" ? "mirror" : ""}`} />
         {status !== "running" && <div className="empty"><div className="cameraIcon">◉</div><b>กล้องพร้อมใช้งาน</b><span>{status === "loading" ? "กำลังเตรียม AI Vision…" : "กดปุ่มด้านล่างเพื่อเริ่ม"}</span></div>}
         <div className="live"><i /> LIVE ANALYSIS</div>
       </div>
@@ -155,6 +185,7 @@ export default function Home() {
         <div className="motion-grid">{motions.map((motion) => <div className="motion" key={motion.name}><span className={motion.active ? "pulse" : ""} />{motion.name}<b>{motion.active ? "เคลื่อนไหว" : "นิ่ง"}</b></div>)}</div>
         <div className="note"><b>ข้อควรรู้สำหรับใช้งานจริง</b><br />การตรวจหมวกปัจจุบันเป็นการคัดกรองจากสีเท่านั้น ต้องเชื่อมต่อโมเดลหมวกนิรภัยที่ผ่านการทดสอบตามหน้างาน ก่อนใช้เป็นระบบแจ้งเตือนหรือบังคับใช้กฎ</div>
       </aside>
+      {status === "running" && <button className="camera-switch" onClick={switchCamera}>สลับเป็น{facingMode === "user" ? "กล้องหลัง" : "กล้องหน้า"}</button>}
     </section>
     <section className="controls"><div className="message">{message}</div><div className="actions">{status === "running" ? <button className="secondary" onClick={stop}>หยุดกล้อง</button> : <button className="primary" onClick={start} disabled={status === "loading"}>{status === "loading" ? "กำลังเริ่ม…" : "เริ่มวิเคราะห์จากกล้อง"}</button>}<label className="upload">อัปโหลดวิดีโอ<input type="file" accept="video/*" onChange={onFile} /></label></div></section>
     <footer><span>SAFETY VISION</span><span>MediaPipe landmarks · client-side processing</span></footer>
