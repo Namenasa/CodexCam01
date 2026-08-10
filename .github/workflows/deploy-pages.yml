@@ -33,7 +33,7 @@ jobs:
         id: pages
         uses: actions/configure-pages@v5
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --no-strict-dep-builds
+        run: pnpm install --frozen-lockfile 
       - name: Build static site
         run: pnpm build
         env:
