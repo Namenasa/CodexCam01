@@ -8,14 +8,18 @@ import {
   HandLandmarker,
   PoseLandmarker,
 } from "@mediapipe/tasks-vision";
+import { InferenceSession, Tensor } from "onnxruntime-web";
 
 type Status = "ready" | "loading" | "running" | "error";
 type Motion = { name: string; active: boolean };
+type PpeBox = { x: number; y: number; width: number; height: number; score: number; label: string };
 
 const POSE_MODEL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 const HAND_MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 const FACE_MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
+const PPE_MODEL = "https://huggingface.co/Hexmon/vyra-yolo-ppe-detection/resolve/main/best.onnx";
+const PPE_LABELS = ["FALL", "GLOVES", "GOGGLES", "HELMET", "LADDER", "MASK", "NO-GLOVES", "NO-GOGGLES", "NO-HELMET", "NO-MASK", "NO-VEST", "PERSON", "CONE", "VEST"];
 
 function distance(a: { x: number; y: number }, b?: { x: number; y: number }) {
   return b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
@@ -27,6 +31,10 @@ export default function Home() {
   const poseRef = useRef<PoseLandmarker | null>(null);
   const handRef = useRef<HandLandmarker | null>(null);
   const faceRef = useRef<FaceLandmarker | null>(null);
+  const ppeRef = useRef<InferenceSession | null>(null);
+  const ppeBoxesRef = useRef<PpeBox[]>([]);
+  const ppeBusyRef = useRef(false);
+  const ppeLastRef = useRef(0);
   const rafRef = useRef<number>(0);
   const frameRef = useRef<() => void>(() => {});
   const previousRef = useRef<Record<string, { x: number; y: number }>>({});
@@ -83,6 +91,68 @@ export default function Home() {
     setHelmet(helmetPixels / (pixels.length / 4) > 0.16 ? "likely" : "not-found");
   };
 
+  const detectPpe = async (video: HTMLVideoElement, outputWidth: number, outputHeight: number) => {
+    if (!ppeRef.current || ppeBusyRef.current || performance.now() - ppeLastRef.current < 550) return;
+    ppeBusyRef.current = true;
+    try {
+      const inputCanvas = document.createElement("canvas");
+      inputCanvas.width = 640; inputCanvas.height = 640;
+      const inputContext = inputCanvas.getContext("2d");
+      if (!inputContext) return;
+      inputContext.drawImage(video, 0, 0, 640, 640);
+      const rgba = inputContext.getImageData(0, 0, 640, 640).data;
+      const input = new Float32Array(3 * 640 * 640);
+      for (let i = 0; i < 640 * 640; i++) {
+        input[i] = rgba[i * 4] / 255;
+        input[i + 640 * 640] = rgba[i * 4 + 1] / 255;
+        input[i + 2 * 640 * 640] = rgba[i * 4 + 2] / 255;
+      }
+      const results = await ppeRef.current.run({ [ppeRef.current.inputNames[0]]: new Tensor("float32", input, [1, 3, 640, 640]) });
+      const tensor = results[ppeRef.current.outputNames[0]];
+      const [,, count] = tensor.dims;
+      const data = tensor.data as Float32Array;
+      const candidates: PpeBox[] = [];
+      for (let i = 0; i < count; i++) {
+        let labelIndex = 0; let score = 0;
+        for (let cls = 0; cls < PPE_LABELS.length; cls++) {
+          const value = data[(4 + cls) * count + i];
+          if (value > score) { score = value; labelIndex = cls; }
+        }
+        if (score < 0.45) continue;
+        const w = data[2 * count + i] / 640 * outputWidth;
+        const h = data[3 * count + i] / 640 * outputHeight;
+        candidates.push({ x: (data[i] / 640 * outputWidth) - w / 2, y: (data[count + i] / 640 * outputHeight) - h / 2, width: w, height: h, score, label: PPE_LABELS[labelIndex] });
+      }
+      candidates.sort((a, b) => b.score - a.score);
+      const kept: PpeBox[] = [];
+      for (const box of candidates) {
+        const duplicate = kept.some((other) => {
+          if (other.label !== box.label) return false;
+          const overlap = Math.max(0, Math.min(box.x + box.width, other.x + other.width) - Math.max(box.x, other.x)) * Math.max(0, Math.min(box.y + box.height, other.y + other.height) - Math.max(box.y, other.y));
+          return overlap / (box.width * box.height + other.width * other.height - overlap) > 0.45;
+        });
+        if (!duplicate) kept.push(box);
+        if (kept.length >= 24) break;
+      }
+      ppeBoxesRef.current = kept;
+    } catch (error) { console.error("PPE inference failed", error); }
+    finally { ppeLastRef.current = performance.now(); ppeBusyRef.current = false; }
+  };
+
+  const drawPpeBoxes = (ctx: CanvasRenderingContext2D) => {
+    ppeBoxesRef.current.forEach((box) => {
+      const unsafe = box.label.startsWith("NO-");
+      const color = unsafe ? "#ff5769" : box.label === "PERSON" ? "#57e5b8" : "#00dbff";
+      ctx.strokeStyle = color; ctx.lineWidth = 3;
+      ctx.strokeRect(box.x, box.y, box.width, box.height);
+      ctx.font = "bold 14px Arial";
+      const text = `${box.label} ${(box.score * 100).toFixed(0)}%`;
+      const textWidth = ctx.measureText(text).width + 12;
+      ctx.fillStyle = color; ctx.fillRect(box.x, Math.max(0, box.y - 23), textWidth, 22);
+      ctx.fillStyle = "#061713"; ctx.fillText(text, box.x + 6, Math.max(15, box.y - 7));
+    });
+  };
+
   const frame = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
@@ -93,6 +163,7 @@ export default function Home() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    void detectPpe(video, canvas.width, canvas.height);
     const time = performance.now();
     const pose = poseRef.current.detectForVideo(video, time).landmarks[0] ?? [];
     const hands = handRef.current?.detectForVideo(video, time).landmarks ?? [];
@@ -107,6 +178,7 @@ export default function Home() {
       draw.drawLandmarks(landmarks, { color: "#d1e1ff", radius: 3 });
     });
     faces.forEach((landmarks) => draw.drawLandmarks(landmarks, { color: "#ff89b8", radius: 1 }));
+    drawPpeBoxes(ctx);
     if (faces[0]) inspectHelmetColor(ctx, faces[0]);
 
     const points: Record<string, { x: number; y: number } | undefined> = {
@@ -127,6 +199,7 @@ export default function Home() {
     try {
       setStatus("loading"); setMessage("กำลังโหลด AI Vision บนอุปกรณ์…");
       const vision = await FilesetResolver.forVisionTasks(WASM);
+      ppeRef.current ??= await InferenceSession.create(PPE_MODEL, { executionProviders: ["wasm"] });
       [poseRef.current, handRef.current, faceRef.current] = await Promise.all([
         PoseLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: POSE_MODEL }, runningMode: "VIDEO", numPoses: 2 }),
         HandLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: HAND_MODEL }, runningMode: "VIDEO", numHands: 4 }),
