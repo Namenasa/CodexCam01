@@ -20,6 +20,7 @@ const FACE_MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmar
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
 const PPE_MODEL = "https://huggingface.co/Hexmon/vyra-yolo-ppe-detection/resolve/main/best.onnx";
 const PPE_LABELS = ["FALL", "GLOVES", "GOGGLES", "HELMET", "LADDER", "MASK", "NO-GLOVES", "NO-GOGGLES", "NO-HELMET", "NO-MASK", "NO-VEST", "PERSON", "CONE", "VEST"];
+const PPE_INTERVAL_MS = 1200;
 
 function distance(a: { x: number; y: number }, b?: { x: number; y: number }) {
   return b ? Math.hypot(a.x - b.x, a.y - b.y) : 0;
@@ -92,7 +93,7 @@ export default function Home() {
   };
 
   const detectPpe = async (video: HTMLVideoElement, outputWidth: number, outputHeight: number) => {
-    if (!ppeRef.current || ppeBusyRef.current || performance.now() - ppeLastRef.current < 550) return;
+    if (!ppeRef.current || ppeBusyRef.current || performance.now() - ppeLastRef.current < PPE_INTERVAL_MS) return;
     ppeBusyRef.current = true;
     try {
       const inputCanvas = document.createElement("canvas");
@@ -156,7 +157,7 @@ export default function Home() {
   const frame = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || !poseRef.current || video.readyState < 2) {
+    if (!video || !canvas || (!poseRef.current && !ppeRef.current) || video.readyState < 2) {
       rafRef.current = requestAnimationFrame(() => frameRef.current()); return;
     }
     canvas.width = video.videoWidth; canvas.height = video.videoHeight;
@@ -165,9 +166,10 @@ export default function Home() {
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     void detectPpe(video, canvas.width, canvas.height);
     const time = performance.now();
-    const pose = poseRef.current.detectForVideo(video, time).landmarks[0] ?? [];
-    const hands = handRef.current?.detectForVideo(video, time).landmarks ?? [];
-    const faces = faceRef.current?.detectForVideo(video, time).faceLandmarks ?? [];
+    const usePpeOnly = !!ppeRef.current;
+    const pose = usePpeOnly ? [] : (poseRef.current?.detectForVideo(video, time).landmarks[0] ?? []);
+    const hands = usePpeOnly ? [] : (handRef.current?.detectForVideo(video, time).landmarks ?? []);
+    const faces = usePpeOnly ? [] : (faceRef.current?.detectForVideo(video, time).faceLandmarks ?? []);
     const draw = new DrawingUtils(ctx);
     if (pose.length) {
       draw.drawConnectors(pose, PoseLandmarker.POSE_CONNECTIONS, { color: "#4de1b2", lineWidth: 4 });
@@ -181,6 +183,7 @@ export default function Home() {
     drawPpeBoxes(ctx);
     if (faces[0]) inspectHelmetColor(ctx, faces[0]);
 
+    if (!usePpeOnly) {
     const points: Record<string, { x: number; y: number } | undefined> = {
       "ใบหน้า": pose[0], "แขน": pose[15] ?? pose[16], "มือ": hands[0]?.[9], "ขา": pose[27] ?? pose[28],
     };
@@ -190,6 +193,7 @@ export default function Home() {
       if (point) previousRef.current[name] = point;
       return { name, active };
     }));
+    }
     rafRef.current = requestAnimationFrame(() => frameRef.current());
   }, []);
 
@@ -198,13 +202,7 @@ export default function Home() {
   const start = async () => {
     try {
       setStatus("loading"); setMessage("กำลังโหลด AI Vision บนอุปกรณ์…");
-      const vision = await FilesetResolver.forVisionTasks(WASM);
       ppeRef.current ??= await InferenceSession.create(PPE_MODEL, { executionProviders: ["wasm"] });
-      [poseRef.current, handRef.current, faceRef.current] = await Promise.all([
-        PoseLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: POSE_MODEL }, runningMode: "VIDEO", numPoses: 2 }),
-        HandLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: HAND_MODEL }, runningMode: "VIDEO", numHands: 4 }),
-        FaceLandmarker.createFromOptions(vision, { baseOptions: { modelAssetPath: FACE_MODEL }, runningMode: "VIDEO", numFaces: 2 }),
-      ]);
       await openCamera(facingMode);
       setStatus("running"); setMessage("กำลังวิเคราะห์จากกล้อง — ภาพประมวลผลบนอุปกรณ์ของคุณ");
       rafRef.current = requestAnimationFrame(() => frameRef.current());
