@@ -32,3 +32,7 @@ bun dev
 Workflow ใน `.github/workflows/deploy-pages.yml` จะ build เป็น static site และเผยแพร่ให้เอง URL จะเป็น `https://<github-user>.github.io/<repository-name>/`
 
 เว็บนี้ไม่มี backend และไม่บันทึกวิดีโอ จึงเหมาะกับ GitHub Pages
+
+## PPE model attribution
+
+ต้นแบบนี้โหลดโมเดล `Hexmon/vyra-yolo-ppe-detection` จาก Hugging Face เพื่อระบุ Hardhat, Safety Vest, Gloves, Person และสถานะ PPE ที่ขาดหาย โมเดลและชุดข้อมูลต้นทางใช้สัญญาอนุญาต [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/): [model card](https://huggingface.co/Hexmon/vyra-yolo-ppe-detection). ต้องรักษา attribution นี้ไว้เมื่อเผยแพร่หรือดัดแปลงต้นแบบ
